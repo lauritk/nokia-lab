@@ -1,64 +1,55 @@
-useGPU = 1; % do you have a GPU? Kilosorting 1000sec of 32chan simulated data takes 55 seconds on gtx 1080 + M2 SSD.
+% default options are in parenthesis after the comment
 
-fpath    = 'D:\Kilosort test\TimeCell_KilosSort_analysis\'; % where on disk do you want the simulation? ideally and SSD...
-if ~exist(fpath, 'dir'); mkdir(fpath); end
+addpath(genpath('E:\KiloSort-master-ephy-fixed')) % path to kilosort folder
+addpath(genpath('E:\npy-matlab-master')) % path to npy-matlab scripts
 
-% This part adds paths
-addpath(genpath('C:\MyTemp\Kilosort tools\KiloSort')) % path to kilosort folder
-addpath(genpath('C:\MyTemp\Kilosort tools\NPY-Matlab')) % path to npy-matlab scripts
-pathToYourConfigFile = 'D:\Kilosort test\TimeCell_KilosSort_analysis'; % for this example it's ok to leave this path inside the repo, but for your own config file you *must* put it somewhere else!  
 
-% Run the configuration file, it builds the structure of options (ops)
+pathToYourConfigFile = 'E:\kilosort_tc2017_probe_(new)'; % take from Github folder and put it somewhere else (together with the master_file)
+
+% Load configurations
 run(fullfile(pathToYourConfigFile, 'config_BuzsakiProbe_mcsW2100.m'))
 
-% This part makes the channel map for this simulation
-make_buzsakiProbe4x8ChannelMap(fpath); 
+% Generate chanMap
+run(fullfile(pathToYourConfigFile, 'make_buzsakiProbe4x8ChannelMap.m'))
 
-% This part simulates and saves data. There are many options you can change inside this 
-% function, if you want to vary the SNR or firing rates, or number of cells etc. 
-% You can vary these to make the simulated data look more like your data.
-% Currently it is set to relatively low SNR for illustration purposes in Phy. 
-%make_eMouseData(fpath, useGPU); 
-%
-% This part runs the normal Kilosort processing on the simulated data
+tic; % start timer
+
+% Converting openEphys to raw binary. Comment out, if not needed.
+if strcmp(ops.datatype , 'openEphys')
+   ops = convertOpenEphysToRawBInary(ops);  % convert data, only for OpenEphys
+end
+
+% Apply CAR and "median trace correction" if enabled (see.
+% https://github.com/cortex-lab/neuropixels/wiki/Recommended_preprocessing)
+if ops.applyCAR
+    median_trace = applyCARtoDat(ops.fbinary, ops.NchanTOT, ops.outputFolder);
+    [~, name, ~] = fileparts(ops.fbinary);
+    ops.fbinary = fullfile(ops.outputFolder, sprintf('%s_CAR.dat', name));
+end
+
+% Initializing GPU will take some time, so don't panic.
+if ops.GPU
+    gpuDevice(1); % initialize GPU (will erase any existing GPU arrays)
+end
+
+% Processing
 [rez, DATA, uproj] = preprocessData(ops); % preprocess data and extract spikes for initialization
 rez                = fitTemplates(rez, DATA, uproj);  % fit templates iteratively
 rez                = fullMPMU(rez, DATA);% extract final spike times (overlapping extraction)
 
-% This runs the benchmark script. It will report both 1) results for the
-% clusters as provided by Kilosort (pre-merge), and 2) results after doing the best
-% possible merges (post-merge). This last step is supposed to
-% mimic what a user would do in Phy, and is the best achievable score
-% without doing splits. 
-%benchmark_simulation(rez, fullfile(fpath, 'eMouseGroundTruth.mat'));
+% save results as matlab variables to file
+save(fullfile(ops.outputFolder,  'rez.mat'), 'rez', '-v7.3');
 
 % save python results file for Phy
-rezToPhy(rez, fpath);
+rezToPhy(rez, ops.outputFolder);
 
-fprintf('Kilosort took %2.2f seconds vs 72.77 seconds on GTX 1080 + M2 SSD \n', toc)
-
-% now fire up Phy and check these results. There should still be manual
-% work to be done (mostly merges, some refinements of contaminated clusters). 
-%% AUTO MERGES 
-% after spending quite some time with Phy checking on the results and understanding the merge and split functions, 
-% come back here and run Kilosort's automated merging strategy. This block
-% will overwrite the previous results and python files. Load the results in
-% Phy again: there should be no merges left to do (with the default simulation), but perhaps a few splits
-% / cleanup. On realistic data (i.e. not this simulation) there will be drift also, which will usually
-% mean there are merges left to do even after this step. 
-% Kilosort's AUTO merges should not be confused with the "best" merges done inside the
-% benchmark (those are using the real ground truth!!!)
-
-rez = merge_posthoc2(rez);
-%benchmark_simulation(rez, fullfile(fpath, 'eMouseGroundTruth.mat'));
-
-% save python results file for Phy
-rezToPhy(rez, fpath);
-
-%% save and clean up
-% save matlab results file for future use (although you should really only be using the manually validated spike_clusters.npy file)
-save(fullfile(fpath,  'rez_postmerge.mat'), 'rez', '-v7.3');
+% Run post-hoc merge and save to different file
+% rezToPhy overrides previous save, so be careful!
+% rez = merge_posthoc2(rez);
+% save(fullfile(ops.outputFolder,  'rez_post_hoc_merged.mat'), 'rez', '-v7.3');
+% rezToPhy(rez, ops.outputFolder);
 
 % remove temporary file
 delete(ops.fproc);
+toc
 %%
